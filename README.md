@@ -29,14 +29,16 @@ Works on cameras running firmware **HC9.15.0.11**.
 
 ## Quick start
 
-### 1. Provision a camera (one-time, ~3 minutes)
+### 1. Provision cameras (one-time, ~3 minutes)
 
 If the camera was paired with a different codec, factory-reset, or you're not
 sure — start here. After this it'll trust the codec identity baked into
-`data/`.
+`data/`. This must be done seperately for each camera.
+
+FYI: Cameras will have an IP address overlay unless it is given a DHCP address in the 169.254.1.X/24 space. This is the range the Codecs use for their direct connection to Cisco cameras.
 
 ```bash
-./provision.py 10.0.0.92
+./provision.py 169.254.1.150
 # wait ~3 minutes; camera reboots and gets a new DHCP lease
 ```
 
@@ -58,7 +60,7 @@ with concurrent.futures.ThreadPoolExecutor(64) as ex:
 ### 2. Run the server
 
 ```bash
-./server.py --camera 10.0.0.93
+./server.py --camera 169.254.1.150 169.254.1.151 --names "Cam1" "Cam2"
 # open http://localhost:8080 in a browser
 ```
 

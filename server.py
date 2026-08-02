@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Minimal control server for a Cisco TTC8-07 / Precision HD camera.
+Minimal control server for Cisco TTC8-07 / Precision HD cameras.
 
 Usage:
-    ./server.py --camera 10.0.0.93 [--port 8080]
+    ./server.py --camera 192.168.1.150 192.168.1.151 [--names "Stage Left" "Stage Right"] [--port 8080]
 
-Opens a DORIC session to the camera and exposes a tiny HTTP API:
+Opens a DORIC session to each camera and exposes a tiny HTTP API:
 
-    GET  /                 → control web UI
-    POST /position         → JSON {pan, tilt, zoom} sends PositionSet
-    GET  /status           → JSON connection state
+    GET  /          → control web UI (camera selector + PTZ controls)
+    POST /position  → JSON {cam, pan, tilt, zoom}  (cam = 0-based index, default 0)
+    GET  /status    → JSON array of connection states, one entry per camera
 
-Camera must already be provisioned by a compatible codec (or by provision.py).
+Each camera must already be provisioned by a compatible codec (or by provision.py).
 """
 import argparse, http.server, json, queue, select, socket, ssl, sys, threading, time
 
@@ -27,21 +27,19 @@ BANNER = (b'DORIC\n' + bytes([0x1b,0x81,0x06]) +
 
 DORIC_PORT = 13496
 
-# ── PositionSet encoding (derived from MITM analysis) ─────────────────────────
+# ── PositionSet encoding (derived from MITM analysis) ────────────────────────
 
 def _encode_pos_field(raw, negative=False):
-    """Big-endian varint with bit6 of first byte = sign."""
     sign = 0x40 if negative else 0x00
     low, high = raw & 0x7F, raw >> 7
-    if high == 0:        return bytes([low | sign])
-    if high < 64:        return bytes([0x80 | sign | high, low])
+    if high == 0:   return bytes([low | sign])
+    if high < 64:   return bytes([0x80 | sign | high, low])
     return bytes([0x80 | sign | (high >> 7), 0x80 | (high & 0x7F), low])
 
 def _xapi_to_pos_raw(xapi):     return (abs(xapi) * 2549) // 7000
 def _xapi_to_zoom_raw(zoom):    return (29417000 - max(1000, min(8000, zoom)) * 2129) // 3000
 
 def build_positionset(pan_xapi, tilt_xapi, zoom_xapi):
-    """pan: -10000..10000, tilt: -2500..2500, zoom: 0..11800 (low=tele)."""
     pan_enc  = _encode_pos_field(_xapi_to_pos_raw(pan_xapi),  pan_xapi  < 0)
     tilt_enc = _encode_pos_field(_xapi_to_pos_raw(tilt_xapi), tilt_xapi < 0)
     zoom_enc = _encode_pos_field(_xapi_to_zoom_raw(zoom_xapi))
@@ -51,8 +49,9 @@ def build_positionset(pan_xapi, tilt_xapi, zoom_xapi):
 # ── Camera connection ─────────────────────────────────────────────────────────
 
 class Camera:
-    def __init__(self, ip):
+    def __init__(self, ip, name=None):
         self.ip       = ip
+        self.name     = name or ip
         self.conn     = None
         self.alive    = True
         self.send_q   = queue.Queue()
@@ -66,9 +65,12 @@ class Camera:
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw.settimeout(5)
         raw.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE,  10)
-        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
-        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT,   3)
+        try:
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE,  10)
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT,   3)
+        except AttributeError:
+            pass  # not available on all platforms (Windows)
         raw.connect((self.ip, DORIC_PORT))
         c = ctx.wrap_socket(raw, server_hostname=self.ip)
         c.setblocking(False)
@@ -117,15 +119,13 @@ class Camera:
         c.send(bytes([0x03,0x01,0x01,0x14])); self._rd(c, 3)
 
     def run(self):
-        """Main connection loop — runs in a thread."""
         while self.alive:
             try:
                 c = self._tls_connect()
                 self._handshake(c)
                 self.conn = c
-                print(f'[camera] ready ({self.ip})', flush=True)
+                print(f'[camera] ready ({self.name} / {self.ip})', flush=True)
                 while self.alive:
-                    # Drain any pending sends
                     try:
                         while True:
                             data = self.send_q.get_nowait()
@@ -136,80 +136,119 @@ class Camera:
                                 break
                     except queue.Empty:
                         pass
-                    # Drain any reads (just to keep TCP flowing; we don't parse here)
                     r, _, _ = select.select([c], [], [], 0.2)
                     if r:
                         try:
                             d = c.recv(4096)
                             if not d:
-                                print('[camera] disconnect: FIN', flush=True)
+                                print(f'[camera] disconnect: FIN ({self.name})', flush=True)
                                 break
                         except (ssl.SSLWantReadError, BlockingIOError):
                             pass
                         except Exception as e:
-                            print(f'[camera] recv error: {e}', flush=True)
+                            print(f'[camera] recv error ({self.name}): {e}', flush=True)
                             break
             except Exception as e:
-                print(f'[camera] connect failed: {e}', flush=True)
+                print(f'[camera] connect failed ({self.name}): {e}', flush=True)
             self.conn = None
             time.sleep(2)
-            print('[camera] reconnecting...', flush=True)
+            print(f'[camera] reconnecting... ({self.name})', flush=True)
 
     def goto(self, pan, tilt, zoom):
         if self.conn is None:
-            raise RuntimeError('camera not connected')
+            raise RuntimeError(f'camera not connected ({self.name})')
         frame = build_positionset(int(pan), int(tilt), int(zoom))
         self.send_q.put(frame)
         self.last_pos = {'pan': pan, 'tilt': tilt, 'zoom': zoom, 'ts': time.time()}
 
-# ── HTTP server ───────────────────────────────────────────────────────────────
+# ── Web UI ────────────────────────────────────────────────────────────────────
 
-INDEX_HTML = b'''<!DOCTYPE html>
+def build_index(cameras):
+    cam_buttons = ''.join(
+        f'<button class="cam-btn" data-idx="{i}" onclick="selectCam({i})">'
+        f'{cam.name}</button>'
+        for i, cam in enumerate(cameras)
+    )
+    html = f'''<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>PTZ</title>
 <style>
-  body { background:#1e1e2e; color:#cdd6f4; font-family:sans-serif;
-         max-width:480px; margin:40px auto; padding:0 20px; }
-  h1 { color:#89b4fa; font-size:1.1rem; letter-spacing:.05em; }
-  .row { display:flex; gap:10px; align-items:center; margin:14px 0; }
-  .row label { width:60px; color:#6c7086; font-size:.85rem; }
-  input[type=number] { flex:1; background:#313244; color:#cdd6f4;
-                       border:1px solid #45475a; border-radius:4px;
-                       padding:6px 8px; font-size:1rem; text-align:right; }
-  button { width:100%; padding:11px; border:none; border-radius:8px;
-           background:#89b4fa; color:#1e1e2e; font-weight:700;
-           font-size:1rem; cursor:pointer; margin-top:8px; }
-  button:active { background:#74c7ec; }
-  button.ok { background:#a6e3a1; }
-  #status { font-size:.8rem; color:#6c7086; margin-top:12px;
-            min-height:1em; font-family:monospace; }
+  body {{ background:#1e1e2e; color:#cdd6f4; font-family:sans-serif;
+          max-width:520px; margin:40px auto; padding:0 20px; }}
+  h1 {{ color:#89b4fa; font-size:1.1rem; letter-spacing:.05em; margin-bottom:4px; }}
+  .cam-row {{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }}
+  .cam-btn {{ padding:8px 14px; border:2px solid #45475a; border-radius:6px;
+              background:#313244; color:#cdd6f4; font-size:.9rem; cursor:pointer; }}
+  .cam-btn.active {{ border-color:#89b4fa; background:#1e1e2e; color:#89b4fa;
+                     font-weight:700; }}
+  .row {{ display:flex; gap:10px; align-items:center; margin:14px 0; }}
+  .row label {{ width:60px; color:#6c7086; font-size:.85rem; }}
+  input[type=number] {{ flex:1; background:#313244; color:#cdd6f4;
+                        border:1px solid #45475a; border-radius:4px;
+                        padding:6px 8px; font-size:1rem; text-align:right; }}
+  button.go {{ width:100%; padding:11px; border:none; border-radius:8px;
+               background:#89b4fa; color:#1e1e2e; font-weight:700;
+               font-size:1rem; cursor:pointer; margin-top:8px; }}
+  button.go:active {{ background:#74c7ec; }}
+  button.go.ok {{ background:#a6e3a1; }}
+  #status {{ font-size:.8rem; color:#6c7086; margin-top:12px;
+             min-height:1em; font-family:monospace; }}
+  #selected-label {{ font-size:.85rem; color:#a6adc8; margin-bottom:6px; }}
 </style></head><body>
-<h1>PTZ POSITION</h1>
+<h1>PTZ CONTROL</h1>
+<div class="cam-row" id="cam-row">{cam_buttons}</div>
+<div id="selected-label">No camera selected</div>
 <div class="row"><label>Pan</label>
   <input type="number" id="pan" value="0" min="-10000" max="10000" step="1"></div>
 <div class="row"><label>Tilt</label>
   <input type="number" id="tilt" value="0" min="-2500" max="2500" step="1"></div>
 <div class="row"><label>Zoom</label>
   <input type="number" id="zoom" value="5000" min="1000" max="8000" step="100"></div>
-<button id="go">Go</button>
-<div id="status">ready</div>
+<button class="go" id="go">Go</button>
+<div id="status">Select a camera above</div>
 <script>
 const $ = id => document.getElementById(id);
-$('go').onclick = async () => {
-  const body = JSON.stringify({pan: +$('pan').value, tilt: +$('tilt').value, zoom: +$('zoom').value});
+let selectedCam = {0 if cameras else 'null'};
+
+function selectCam(idx) {{
+  selectedCam = idx;
+  document.querySelectorAll('.cam-btn').forEach((b,i) =>
+    b.classList.toggle('active', i === idx));
+  const names = {json.dumps([c.name for c in cameras])};
+  $('selected-label').textContent = 'Controlling: ' + names[idx];
+  $('status').textContent = 'ready';
+}}
+
+// auto-select first camera on load
+selectCam(0);
+
+$('go').onclick = async () => {{
+  if (selectedCam === null) {{ $('status').textContent = 'Select a camera first'; return; }}
+  const body = JSON.stringify({{
+    cam: selectedCam,
+    pan: +$('pan').value,
+    tilt: +$('tilt').value,
+    zoom: +$('zoom').value
+  }});
   $('status').textContent = 'sending: ' + body;
-  try {
-    const r = await fetch('/position', {method:'POST', headers:{'Content-Type':'application/json'}, body});
+  try {{
+    const r = await fetch('/position', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body}});
     const t = await r.text();
     $('status').textContent = r.ok ? 'ok: ' + t : 'error ' + r.status + ': ' + t;
-    $('go').classList.toggle('ok', r.ok); setTimeout(()=>$('go').classList.remove('ok'), 500);
-  } catch (e) {
+    $('go').classList.toggle('ok', r.ok);
+    setTimeout(() => $('go').classList.remove('ok'), 500);
+  }} catch (e) {{
     $('status').textContent = 'network error: ' + e.message;
-  }
-};
+  }}
+}};
 </script></body></html>
-'''
+'''.encode('utf-8')
+    return html
 
-def make_handler(camera):
+# ── HTTP handler ──────────────────────────────────────────────────────────────
+
+def make_handler(cameras):
+    index_html = build_index(cameras)
+
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
 
@@ -222,12 +261,14 @@ def make_handler(camera):
 
         def do_GET(self):
             if self.path in ('/', '/index.html'):
-                self._send(200, INDEX_HTML, 'text/html; charset=utf-8')
+                self._send(200, index_html, 'text/html; charset=utf-8')
             elif self.path == '/status':
-                body = json.dumps({
-                    'connected': camera.conn is not None,
-                    'last_pos':  camera.last_pos,
-                }).encode()
+                body = json.dumps([{
+                    'name':      cam.name,
+                    'ip':        cam.ip,
+                    'connected': cam.conn is not None,
+                    'last_pos':  cam.last_pos,
+                } for cam in cameras]).encode()
                 self._send(200, body, 'application/json')
             else:
                 self._send(404, b'not found')
@@ -238,7 +279,11 @@ def make_handler(camera):
             try:
                 n = int(self.headers.get('Content-Length', 0))
                 data = json.loads(self.rfile.read(n))
-                camera.goto(data['pan'], data['tilt'], data['zoom'])
+                idx = int(data.get('cam', 0))
+                if idx < 0 or idx >= len(cameras):
+                    self._send(400, f'cam index {idx} out of range (0–{len(cameras)-1})'.encode())
+                    return
+                cameras[idx].goto(data['pan'], data['tilt'], data['zoom'])
                 self._send(200, b'ok')
             except RuntimeError as e:
                 self._send(503, str(e).encode())
@@ -246,21 +291,37 @@ def make_handler(camera):
                 self._send(400, f'{type(e).__name__}: {e}'.encode())
     return H
 
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--camera', required=True, help='camera IP address')
-    ap.add_argument('--port',   type=int, default=8080, help='HTTP port (default 8080)')
+    ap.add_argument('--camera', required=True, nargs='+',
+                    metavar='IP', help='one or more camera IP addresses')
+    ap.add_argument('--names', nargs='+', metavar='NAME',
+                    help='friendly names for each camera (must match --camera count)')
+    ap.add_argument('--port', type=int, default=8080, help='HTTP port (default 8080)')
     args = ap.parse_args()
 
-    cam = Camera(args.camera)
-    threading.Thread(target=cam.run, daemon=True).start()
+    names = args.names or []
+    if names and len(names) != len(args.camera):
+        ap.error(f'--names count ({len(names)}) must match --camera count ({len(args.camera)})')
 
-    srv = http.server.ThreadingHTTPServer(('', args.port), make_handler(cam))
-    print(f'[web] listening on :{args.port} (camera={args.camera})', flush=True)
+    cameras = [
+        Camera(ip, names[i] if i < len(names) else f'Camera {i+1}')
+        for i, ip in enumerate(args.camera)
+    ]
+
+    for cam in cameras:
+        threading.Thread(target=cam.run, daemon=True, name=f'cam-{cam.name}').start()
+
+    srv = http.server.ThreadingHTTPServer(('', args.port), make_handler(cameras))
+    cam_list = ', '.join(f'{c.name}={c.ip}' for c in cameras)
+    print(f'[web] listening on :{args.port} ({cam_list})', flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        cam.alive = False
+        for cam in cameras:
+            cam.alive = False
         print('\n[web] shutting down')
 
 if __name__ == '__main__':
