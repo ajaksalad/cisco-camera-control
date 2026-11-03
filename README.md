@@ -101,4 +101,4 @@ provisioned by this toolset. Treat the `data/` files as you would a private
 key.
 
 ## Related Projects
-[https://github.com/e2346437/cisco-ptz-pad](Windows native control interface using this API)
+* [Windows native control interface using this API](https://github.com/e2346437/cisco-ptz-pad)
