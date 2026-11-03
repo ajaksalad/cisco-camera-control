@@ -99,3 +99,6 @@ The identity blobs in `server.py` and `data/*.bin` are **one specific codec's**
 captured identity. Anyone with these files can control any camera ever
 provisioned by this toolset. Treat the `data/` files as you would a private
 key.
+
+## Related Projects
+[https://github.com/e2346437/cisco-ptz-pad](Windows native control interface using this API)
