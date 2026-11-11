@@ -58,9 +58,15 @@ class Camera:
         self.last_pos = {'pan': None, 'tilt': None, 'zoom': None, 'ts': 0.0}
 
     def _tls_connect(self):
-        ctx = ssl.create_default_context()
+        # Camera (TTC8-07) only speaks TLS 1.0 with non-PFS CBC ciphers.
+        # create_default_context() floors the version at TLS 1.2 on Python >=3.12,
+        # which produces "unsupported protocol". Build the context explicitly and
+        # drop the floor to TLS 1.0 + SECLEVEL=0.
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
+        ctx.minimum_version = ssl.TLSVersion.TLSv1
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
         ctx.set_ciphers('ALL:@SECLEVEL=0')
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw.settimeout(5)
