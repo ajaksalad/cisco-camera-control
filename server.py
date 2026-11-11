@@ -37,7 +37,7 @@ def _encode_pos_field(raw, negative=False):
     return bytes([0x80 | sign | (high >> 7), 0x80 | (high & 0x7F), low])
 
 def _xapi_to_pos_raw(xapi):     return (abs(xapi) * 2549) // 7000
-def _xapi_to_zoom_raw(zoom):    return (29417000 - max(1000, min(8000, zoom)) * 2129) // 3000
+def _xapi_to_zoom_raw(zoom):    return max(0, (29417000 - max(1000, min(20000, zoom)) * 2129) // 3000)
 
 def build_positionset(pan_xapi, tilt_xapi, zoom_xapi):
     pan_enc  = _encode_pos_field(_xapi_to_pos_raw(pan_xapi),  pan_xapi  < 0)
@@ -208,7 +208,7 @@ def build_index(cameras):
 <div class="row"><label>Tilt</label>
   <input type="number" id="tilt" value="0" min="-2500" max="2500" step="1"></div>
 <div class="row"><label>Zoom</label>
-  <input type="number" id="zoom" value="5000" min="1000" max="8000" step="100"></div>
+  <input type="number" id="zoom" value="5000" min="1000" max="20000" step="100"></div>
 <button class="go" id="go">Go</button>
 <div id="status">Select a camera above</div>
 <script>

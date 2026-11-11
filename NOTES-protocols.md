@@ -63,3 +63,7 @@ Observed session structure:
 - How to discover them: record 13496 while driving the camera from a real
   codec (SX/C/Room system) and diff frames per button press. Live fuzzing
   risks re-provisioning the camera; not recommended.
+
+## Naming
+
+"DORIC" and "CPPMF" are the protocols' own on-wire magic strings (doric_session.bin offset 0 = ASCII "DORIC\n"; every CPPMF frame starts "CPPMF;"). They are Cisco/Tandberg internal codenames; no public expansion or alternate public name exists. Cisco port-reference docs do not document 13491/13496. Web searches for the names return only this repo and its forks.
