@@ -282,7 +282,7 @@ PANEL_HTML = '''
 <button class="abtn" data-cmd="set_call_led" data-args="[1]">Call LED off</button>
 <div class="btnrow">
 <input id="osdtext" type="text" value="HELLO" size="10" maxlength="32" style="background:#222;color:#eee;border:1px solid #555;padding:4px">
-<button class="abtn" data-cmd="osd_show_text" data-args="[\"@osdtext\",100,100,120,40]">OSD text</button>
+<button class="abtn" data-cmd="osd_show_text" data-args='["@osdtext",100,100,120,40]'>OSD text</button>
 </div>
 </div>
 <div class="btnrow">
