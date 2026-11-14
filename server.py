@@ -309,7 +309,7 @@ async function pollTelemetry() {
     const t = cams[selectedCam].telemetry || {};
     const lines = Object.entries(t).map(([k, v]) =>
       (EV_NAMES[k] || ('event' + k)) + ': ' + JSON.stringify(v));
-    if (lines.length) $('telem').textContent = lines.join('\n');
+    if (lines.length) $('telem').textContent = lines.join(String.fromCharCode(10));
   } catch (e) {}
 }
 setInterval(pollTelemetry, 2000);
