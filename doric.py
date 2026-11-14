@@ -114,13 +114,14 @@ CMDS = {
     'osd_show_text':      (8,  'siiii'),
     'osd_draw_square':    (9,  'iiiib'),
     'osd_clear':          (10, ''),
-    'set_system_led':     (11, 'i'),
-    'set_call_led':       (12, 'i'),
+    'set_system_led':     (11, 'i'),   # serialize_int (status mode 0..15)
+    'set_call_led':       (12, 'u'),   # serialize_unsigned (0 off,1 on,2 blink)
     'convert_preset_motor_positions_to_angles_and_zoom': (13, 'iii'),
     'enable_speakertrack_mode':  (14, ''),
     'disable_speakertrack_mode': (15, ''),
     'start_facedetection':(16, ''),
     'reboot':             (17, ''),
+    'configure':          (18, 'C'),   # CameraConfig; ack = event 8 on_config_complete
     'set_ptzf':           (19, 'I'),   # pan,tilt,zoom,focus + enables
     'get_status':         (20, ''),
     'get_position':       (21, ''),
@@ -150,7 +151,8 @@ CMDS = {
 }
 
 # methods answered by an observer event (id): caller waits for that event
-QUERY_EVENT = {'get_status': 9, 'get_position': 10, 'get_capabilities': 11}
+QUERY_EVENT = {'get_status': 9, 'get_position': 10, 'get_capabilities': 11,
+               'configure': 8}
 
 # CameraConfig field order (struct @0x2a5144, serialize order ascending)
 CONFIG_FIELDS = [('brightness_auto','b'),('brightness_level','i'),
@@ -159,7 +161,8 @@ CONFIG_FIELDS = [('brightness_auto','b'),('brightness_level','i'),
                  ('exposure_comp_level','i'),('mirror','i'),('flip','i'),
                  ('gamma_auto','b'),('gamma_level','i'),
                  ('ir_mode_on','b'),('power_frequency','i'),
-                 ('video_format','i')]
+                 ('video_format','i'),
+                 ('reserved','b')]     # struct +56: serialized, unused by firmware
 
 def encode_args(spec, args):
     out = bytearray()
@@ -198,7 +201,9 @@ def decode_event(payload):
             data = dict(pan=r.float(), tilt=r.float(),
                         zoom=r.float(), focus=r.float())
         elif evt == 9:
-            data = dict(flipped=r.byte(), mirrored=r.byte(),
+            # field naming matches the configure() request fields (verified
+            # live: configure mirror=1 -> byte0=1, flip=1 -> byte1=1)
+            data = dict(mirror=r.byte(), flip=r.byte(),
                         focus_mode=r.uint(), flag=r.byte(),
                         upside_down=r.byte())
         elif evt == 10:

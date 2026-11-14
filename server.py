@@ -13,8 +13,18 @@ Opens a DORIC session to each camera and exposes a tiny HTTP API:
 
 Each camera must already be provisioned by a compatible codec (or by provision.py).
 """
-import argparse, http.server, json, queue, select, socket, ssl, sys, threading, time
+import argparse, http.server, json, os, queue, select, socket, ssl, sys, threading, time
 import doric
+
+# CameraConfig power-on defaults (field 15 is serialized but unused by fw).
+DEFAULT_CFG = {
+    'brightness_auto': 1, 'brightness_level': 0,
+    'whitebalance_auto': 1, 'whitebalance_level': 0,
+    'focus_mode': 0, 'backlight_on': 0, 'exposure_comp_level': 0,
+    'mirror': 0, 'flip': 0, 'gamma_auto': 1, 'gamma_level': 0,
+    'ir_mode_on': 0, 'power_frequency': 0, 'video_format': 1,
+    'reserved': 0,
+}
 
 # ── DORIC protocol constants (captured from a real codec session) ─────────────
 
@@ -61,6 +71,9 @@ class Camera:
         self.telemetry = {}            # event id -> last decoded payload
         self.pending  = {}             # event id -> threading.Event (ask())
         self.tlock    = threading.Lock()
+        # No config getter in the protocol: keep a local mirror of the last
+        # configure() sent. Defaults match the firmware's power-on defaults.
+        self.cfg = dict(DEFAULT_CFG)
 
     def _tls_connect(self):
         # Camera (TTC8-07) only speaks TLS 1.0 with non-PFS CBC ciphers.
@@ -184,20 +197,23 @@ class Camera:
 
     def _ingest(self, payload):
         evt, data, raw = doric.decode_event(payload)
+        if os.environ.get('DORIC_RX'):
+            print(f'[rx] evt={evt} data={data} raw={raw}', flush=True)
         if data is not None:
             with self.tlock:
                 self.telemetry[evt] = data
-            ev = self.pending.pop(evt, None)
-            if ev is not None:
-                ev.result = data
-                ev.set()
+        ev = self.pending.pop(evt, None)
+        if ev is not None:
+            # ack frames with no args (e.g. on_config_complete) still count
+            ev.result = data if data is not None else 'acked'
+            ev.set()
 
     def command(self, name, args=None):
         if self.conn is None:
             raise RuntimeError(f'camera not connected ({self.name})')
         self.send_q.put(doric.encode_cmd(name, args or []))
 
-    def ask(self, name, timeout=3.0):
+    def ask(self, name, args=None, timeout=3.0):
         """Query method whose reply arrives as an observer event."""
         evt_id = doric.QUERY_EVENT[name]
         if self.conn is None:
@@ -205,7 +221,7 @@ class Camera:
         ev = threading.Event()
         ev.result = None
         self.pending[evt_id] = ev
-        self.send_q.put(doric.encode_cmd(name, []))
+        self.send_q.put(doric.encode_cmd(name, args if args is not None else []))
         if not ev.wait(timeout):
             self.pending.pop(evt_id, None)
             raise TimeoutError(f'no reply to {name} within {timeout}s')
@@ -255,6 +271,19 @@ PANEL_HTML = '''
 <button class="abtn" data-cmd="disable_speakertrack_mode">SpeakTrack off</button>
 <button class="abtn" data-cmd="start_facedetection">Face detect</button>
 <button class="abtn" data-cmd="osd_clear">OSD clear</button>
+</div>
+<div class="sec">Image (configure: server merges with last-known config)</div>
+<div class="btnrow">
+<button class="abtn" data-cmd="configure" data-args='{"flip":1}'>Flip on</button>
+<button class="abtn" data-cmd="configure" data-args='{"flip":0}'>Flip off</button>
+<button class="abtn" data-cmd="configure" data-args='{"mirror":1}'>Mirror on</button>
+<button class="abtn" data-cmd="configure" data-args='{"mirror":0}'>Mirror off</button>
+</div>
+<div class="btnrow">
+<button class="abtn" data-cmd="set_call_led" data-args="[1]">Call LED on</button>
+<button class="abtn" data-cmd="set_call_led" data-args="[2]">Call LED blink</button>
+<button class="abtn" data-cmd="set_call_led" data-args="[0]">Call LED off</button>
+<button class="abtn" data-cmd="osd_show_text" data-args="[\"HELLO\",100,100,120,40]">OSD text</button>
 </div>
 <div class="btnrow">
 <button class="abtn" data-cmd="set_system_led" data-args="[1]">LED on</button>
@@ -472,7 +501,17 @@ def make_handler(cameras):
                 if cmd not in doric.CMDS or cmd == 'subscribe':
                     self._send(400, f'unknown command: {cmd}'.encode()); return
                 args = data.get('args', [])
-                if cmd in doric.QUERY_EVENT:
+                if cmd == 'configure':
+                    if not isinstance(args, dict):
+                        self._send(400, b'configure args must be a JSON object')
+                        return
+                    cameras[idx].cfg.update(args)
+                    reply = cameras[idx].ask('configure', cameras[idx].cfg,
+                                             timeout=8.0)
+                    self._send(200, json.dumps(
+                        {'cmd': cmd, 'config': cameras[idx].cfg,
+                         'ack': reply}).encode(), 'application/json')
+                elif cmd in doric.QUERY_EVENT:
                     reply = cameras[idx].ask(cmd)
                     self._send(200, json.dumps({'cmd': cmd, 'reply': reply}).encode(),
                                'application/json')
