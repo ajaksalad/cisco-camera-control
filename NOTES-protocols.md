@@ -48,23 +48,56 @@ Observed session structure:
      /postinstall.d/rwfs.hook.exec, SELinux file contexts
    So DORIC can re-flash: SoC firmware, FPGA, motor MCU, certs, calibration
    tables, filesystem layout.
-4. Control: PositionSet = `len` + `01 01 13` + varint(pan) `01` varint(tilt)
-   `01` varint(zoom) + `01 00 00`. Varints are 7-bit groups,
-   0x80 = more, BIG-ENDIAN group order (verified: banner frame length
-   `81 06` = 134; live probe get_position `a054` = 4180, `a104` = 4228).
-   (Earlier "low byte last" claim was wrong.)
+4. Control: RPC payload = varint(svc, obj, methodID) + args. The full method
+   table is NO LONGER unknown: `main.bin` (the DORIC listener binary in the
+   apps squashfs) is not stripped — `readelf -sW | c++filt` lists all 44
+   `HalleyControllerStub::` methods, and wire method ID N maps to controller
+   vtable slot N+1 (jump table verified; see ../firmware-extract/analysis/
+   doric_13496.md in the parent repo). Full catalog with wire IDs and
+   arg specs: ../doric_protocol/README.md; implemented as doric.CMDS in this
+   repo. Example — set_ptzf (wire 19, "PositionSet"): `01 01 13` + 4 float
+   args. Varints are 7-bit groups, 0x80 = more, BIG-ENDIAN group order
+   (verified: banner frame length `81 06` = 134; live probe get_position
+   `a054` = 4180, `a104` = 4228). (Earlier "low byte last" claim was wrong.)
+   Live-verified from server.py against a real P60 (Nov 13 2026): ramp_pt_*,
+   zoom_near/far, set_ptzf, get_status/position/capabilities, set_call_led,
+   configure (flip/mirror included), osd_show_text/osd_draw_square/osd_clear,
+   convert_preset_motor_positions_to_angles_and_zoom, start_facedetection,
+   power_on/reboot. get_capabilities limits (native units): pan ±3600,
+   tilt ±650, zoom 4128-14864, focus 4096-4890.
 5. Version reports near end of session: frames `27 00 01 09 01 <len> <str>`
    and `26 00 01 06 <len> <str>` carrying HC9.15.0.11 strings and target
    list.
 
-## What is NOT known
+## Session semantics (live-verified Nov 13 2026)
 
-- The full DORIC opcode table. Only PositionSet is publicly reverse
-  engineered. Codec-driven features (autofocus, presets, home, menu, power)
-  must map to other opcodes, but no public capture shows them.
-- How to discover them: record 13496 while driving the camera from a real
-  codec (SX/C/Room system) and diff frames per button press. Live fuzzing
-  risks re-provisioning the camera; not recommended.
+- The camera NEVER acks an RPC. Only two frame types exist: our calls out,
+  observer pushes in (prologue `00 01 <eventID varint>`). Setters are
+  fire-and-forget; "no reply" means success.
+- Queries get_status/get_position/get_capabilities are answered by events
+  9/10/11. configure (18) acks with event 8 — latency can exceed 3 s.
+  Client must send `subscribe(connID)` after connect to receive events.
+- Decoded event payload formats: EVT 1 (position, 4 floats), EVT 2 (converted
+  preset positions, 4 floats), EVT 4 (on_faces: count + per-face 5 uvarints,
+  score 16.16 fixed point), EVT 5 (heartbeat ~1/s), EVT 13 (video_format at
+  connect). Details in doric_protocol/README.md.
+- The camera accepts exactly ONE TLS client on 13496; a second handshake is
+  cut with EOF.
+- start_facedetection is ON-only: no stop RPC exists in the 44-method catalog;
+  stopping needs a reboot or power cycle.
+- hunter/speakertrack and system LEDs are codec-side; the P60 has no
+  microphone (datasheet c78-669051). Don't expose them camera-side.
+
+## What is still NOT known
+
+- osd_draw_square: whether the trailing bool is a draw/erase flag (unproven).
+- Exact field ORDER inside EVT 4 FaceDetection (x,y,w,h,score is a
+  best-guess) and field NAMES in EVT 2 (order mirrors EVT 1; values exact).
+- Why EVT 9 flip/mirror state sometimes reads inverted after a configure ack
+  (NOT-semantics or codec-side rewrite — confirm against live video).
+- Discovery method note (superseded): the catalog came from static RE of the
+  unstripped binary, not from live fuzzing. Fuzzing remains unnecessary and
+  risky (DORIC can re-provision — see item 3).
 
 ## Naming
 
