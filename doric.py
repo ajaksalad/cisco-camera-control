@@ -197,7 +197,12 @@ def decode_event(payload):
     r.uint(); r.uint()          # svc, obj (0,1)
     evt = r.uint()
     try:
-        if evt == 4:
+        if evt == 2:
+            # on_converted_preset_motor_positions_to_angles_and_zoom: f f f f
+            # (field naming best-guess, mirrors EVT 1 order)
+            data = dict(pan=r.float(), tilt=r.float(),
+                        zoom=r.float(), focus=r.float())
+        elif evt == 4:
             # on_faces: count + FaceDetection[] (5 uints each).
             # score is 16.16 fixed point (16384 = 0.25); field order
             # x,y,w,h,score is best-guess from id_map "5 ints".

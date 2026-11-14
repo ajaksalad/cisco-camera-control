@@ -284,6 +284,22 @@ PANEL_HTML = '''
 <input id="osdtext" type="text" value="HELLO" size="10" maxlength="32" style="background:#222;color:#eee;border:1px solid #555;padding:4px">
 <button class="abtn" data-cmd="osd_show_text" data-args='["@osdtext",100,100,120,40]'>OSD text</button>
 </div>
+<div class="btnrow">
+<span style="color:#888">square x y w h:</span>
+<input id="sqx" type="number" value="100" size="4" style="width:60px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<input id="sqy" type="number" value="100" size="4" style="width:60px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<input id="sqw" type="number" value="120" size="4" style="width:60px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<input id="sqh" type="number" value="40" size="4" style="width:60px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<button class="abtn" data-cmd="osd_draw_square" data-args='["@sqx","@sqy","@sqw","@sqh",true]'>square on</button>
+<button class="abtn" data-cmd="osd_draw_square" data-args='["@sqx","@sqy","@sqw","@sqh",false]'>square off</button>
+</div>
+<div class="btnrow">
+<span style="color:#888">preset pan tilt zoom:</span>
+<input id="ppan" type="number" value="0" size="5" style="width:70px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<input id="ptilt" type="number" value="0" size="5" style="width:70px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<input id="pzoom" type="number" value="1000" size="5" style="width:70px;background:#222;color:#eee;border:1px solid #555;padding:4px">
+<button class="abtn" data-cmd="convert_preset_motor_positions_to_angles_and_zoom" data-args='["@ppan","@ptilt","@pzoom"]'>convert</button>
+</div>
 </div>
 <div class="btnrow">
 <button class="abtn danger" data-cmd="power_on">Power on</button>
@@ -333,7 +349,13 @@ document.querySelectorAll('[data-cmd]').forEach(b => {
     if (b.classList.contains('danger') &&
         !confirm('Send ' + b.dataset.cmd + ' to the camera?')) return;
     let args = b.dataset.args ? JSON.parse(b.dataset.args) : [];
-    args = args.map(a => a === '@osdtext' ? ($('osdtext').value || '') : a);
+    args = args.map(a => {
+      if (typeof a === 'string' && a[0] === '@') {
+        const el = $(a.slice(1));
+        return el.type === 'number' ? Number(el.value) : el.value;
+      }
+      return a;
+    });
     sendCmd(b.dataset.cmd, args);
   });
 });
