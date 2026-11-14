@@ -54,7 +54,7 @@ Observed session structure:
    `HalleyControllerStub::` methods, and wire method ID N maps to controller
    vtable slot N+1 (jump table verified; see ../firmware-extract/analysis/
    doric_13496.md in the parent repo). Full catalog with wire IDs and
-   arg specs: ../doric_protocol/README.md; implemented as doric.CMDS in this
+   arg specs: DORIC.md (this repo); implemented as doric.CMDS in this
    repo. Example — set_ptzf (wire 19, "PositionSet"): `01 01 13` + 4 float
    args. Varints are 7-bit groups, 0x80 = more, BIG-ENDIAN group order
    (verified: banner frame length `81 06` = 134; live probe get_position
@@ -80,7 +80,7 @@ Observed session structure:
 - Decoded event payload formats: EVT 1 (position, 4 floats), EVT 2 (converted
   preset positions, 4 floats), EVT 4 (on_faces: count + per-face 5 uvarints,
   score 16.16 fixed point), EVT 5 (heartbeat ~1/s), EVT 13 (video_format at
-  connect). Details in doric_protocol/README.md.
+  connect). Details in DORIC.md (this repo).
 - The camera accepts exactly ONE TLS client on 13496; a second handshake is
   cut with EOF.
 - start_facedetection is ON-only: no stop RPC exists in the 44-method catalog;

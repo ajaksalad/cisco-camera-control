@@ -24,6 +24,7 @@ Works on cameras running firmware **HC9.15.0.11**.
 |------|---------|
 | `server.py` | HTTP API + web UI that drives a paired camera |
 | `doric.py` | DORIC wire codec: framing, command catalog (`CMDS`), observer-event decoders |
+| `DORIC.md` | Full DORIC protocol reference: method catalog, wire IDs, arg specs, observer events (copy of parent repo's `doric_protocol/README.md`) |
 | `provision.py` | One-shot tool that "pairs" any reachable camera by replaying a captured codec session |
 | `data/cppmf_session.bin` | 2.4 KB CPPMF (port 13491) management traffic — codec→camera |
 | `data/doric_session.bin` | 42.6 MB DORIC (port 13496) firmware + identity upload — codec→camera |
