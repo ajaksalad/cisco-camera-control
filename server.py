@@ -265,10 +265,7 @@ PANEL_HTML = '''
 </div>
 <div class="sec">Modes / System (use with care)</div>
 <div class="btnrow">
-<button class="abtn" data-cmd="enable_hunter_mode">Hunter on</button>
-<button class="abtn" data-cmd="disable_hunter_mode">Hunter off</button>
-<button class="abtn" data-cmd="enable_speakertrack_mode">SpeakTrack on</button>
-<button class="abtn" data-cmd="disable_speakertrack_mode">SpeakTrack off</button>
+
 <button class="abtn" data-cmd="start_facedetection">Face detect</button>
 <button class="abtn" data-cmd="osd_clear">OSD clear</button>
 </div>
@@ -280,14 +277,12 @@ PANEL_HTML = '''
 <button class="abtn" data-cmd="configure" data-args='{"mirror":0}'>Mirror off</button>
 </div>
 <div class="btnrow">
-<button class="abtn" data-cmd="set_call_led" data-args="[1]">Call LED on</button>
+<button class="abtn" data-cmd="set_call_led" data-args="[0]">Call LED on</button>
 <button class="abtn" data-cmd="set_call_led" data-args="[2]">Call LED blink</button>
-<button class="abtn" data-cmd="set_call_led" data-args="[0]">Call LED off</button>
+<button class="abtn" data-cmd="set_call_led" data-args="[1]">Call LED off</button>
 <button class="abtn" data-cmd="osd_show_text" data-args="[\"HELLO\",100,100,120,40]">OSD text</button>
 </div>
 <div class="btnrow">
-<button class="abtn" data-cmd="set_system_led" data-args="[1]">LED on</button>
-<button class="abtn" data-cmd="set_system_led" data-args="[0]">LED off</button>
 <button class="abtn danger" data-cmd="power_on">Power on</button>
 <button class="abtn danger" data-cmd="power_off">Power off</button>
 <button class="abtn danger" data-cmd="reboot">Reboot</button>

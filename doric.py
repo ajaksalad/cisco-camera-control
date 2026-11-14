@@ -115,7 +115,7 @@ CMDS = {
     'osd_draw_square':    (9,  'iiiib'),
     'osd_clear':          (10, ''),
     'set_system_led':     (11, 'i'),   # serialize_int (status mode 0..15)
-    'set_call_led':       (12, 'u'),   # serialize_unsigned (0 off,1 on,2 blink)
+    'set_call_led':       (12, 'u'),   # serialize_unsigned: 0 = lit, 1 = off (verified live), 2 = blink
     'convert_preset_motor_positions_to_angles_and_zoom': (13, 'iii'),
     'enable_speakertrack_mode':  (14, ''),
     'disable_speakertrack_mode': (15, ''),
