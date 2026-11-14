@@ -49,8 +49,10 @@ Observed session structure:
    So DORIC can re-flash: SoC firmware, FPGA, motor MCU, certs, calibration
    tables, filesystem layout.
 4. Control: PositionSet = `len` + `01 01 13` + varint(pan) `01` varint(tilt)
-   `01` varint(zoom) + `01 00 00`. Varints are signed 0x40-bit,
-   7-bit groups, low byte last.
+   `01` varint(zoom) + `01 00 00`. Varints are 7-bit groups,
+   0x80 = more, BIG-ENDIAN group order (verified: banner frame length
+   `81 06` = 134; live probe get_position `a054` = 4180, `a104` = 4228).
+   (Earlier "low byte last" claim was wrong.)
 5. Version reports near end of session: frames `27 00 01 09 01 <len> <str>`
    and `26 00 01 06 <len> <str>` carrying HC9.15.0.11 strings and target
    list.
