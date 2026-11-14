@@ -280,7 +280,10 @@ PANEL_HTML = '''
 <button class="abtn" data-cmd="set_call_led" data-args="[0]">Call LED on</button>
 <button class="abtn" data-cmd="set_call_led" data-args="[2]">Call LED blink</button>
 <button class="abtn" data-cmd="set_call_led" data-args="[1]">Call LED off</button>
-<button class="abtn" data-cmd="osd_show_text" data-args="[\"HELLO\",100,100,120,40]">OSD text</button>
+<div class="btnrow">
+<input id="osdtext" type="text" value="HELLO" size="10" maxlength="32" style="background:#222;color:#eee;border:1px solid #555;padding:4px">
+<button class="abtn" data-cmd="osd_show_text" data-args="[\"@osdtext\",100,100,120,40]">OSD text</button>
+</div>
 </div>
 <div class="btnrow">
 <button class="abtn danger" data-cmd="power_on">Power on</button>
@@ -288,6 +291,7 @@ PANEL_HTML = '''
 <button class="abtn danger" data-cmd="reboot">Reboot</button>
 </div>
 <pre id="telem">telemetry: waiting for events…</pre>
+<pre id="rlog">responses:</pre>
 '''
 
 PANEL_JS = '''
@@ -296,6 +300,12 @@ const EV_NAMES = {2:'preset_angles',3:'malfunction',4:'faces',6:'motion',
   11:'capabilities',12:'power_on_complete',13:'ack/config',14:'video_format'};
 const speed = () => Math.max(1, +$('speed').value || 50);
 
+function logResp(line) {
+  const el = $('rlog');
+  el.textContent = (line + String.fromCharCode(10) + el.textContent)
+    .split(String.fromCharCode(10)).slice(0, 12).join(String.fromCharCode(10));
+}
+
 async function sendCmd(cmd, args, ask) {
   if (selectedCam === null) { $('status').textContent = 'Select a camera first'; return; }
   const body = JSON.stringify({cam: selectedCam, cmd, args: args || []});
@@ -303,6 +313,10 @@ async function sendCmd(cmd, args, ask) {
     const r = await fetch('/command', {method:'POST',
       headers:{'Content-Type':'application/json'}, body});
     const t = await r.text();
+    let out = cmd + ' -> ' + t;
+    try { const j = JSON.parse(t);
+      if (j.reply !== undefined) out = cmd + ' -> ' + JSON.stringify(j.reply); } catch (e) {}
+    logResp(out);
     if (ask && r.ok) { const j = JSON.parse(t);
       $('telem').textContent = cmd + ' -> ' + JSON.stringify(j.reply, null, 1); }
     else $('status').textContent = r.ok ? 'sent: ' + cmd : 'error ' + r.status + ': ' + t;
@@ -318,7 +332,9 @@ document.querySelectorAll('[data-cmd]').forEach(b => {
   b.addEventListener('click', () => {
     if (b.classList.contains('danger') &&
         !confirm('Send ' + b.dataset.cmd + ' to the camera?')) return;
-    sendCmd(b.dataset.cmd, b.dataset.args ? JSON.parse(b.dataset.args) : []);
+    let args = b.dataset.args ? JSON.parse(b.dataset.args) : [];
+    args = args.map(a => a === '@osdtext' ? ($('osdtext').value || '') : a);
+    sendCmd(b.dataset.cmd, args);
   });
 });
 document.querySelectorAll('[data-ask]').forEach(b => {
