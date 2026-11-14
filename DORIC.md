@@ -1,9 +1,5 @@
 # DORIC protocol RE (main.bin, tcp/13496)
 
-> Copy of `doric_protocol/README.md` from the parent repo
-> (`/mnt/git/cisco-camera`). Keep the two files in sync; the parent repo
-> copy is the authoritative one for protocol-RE updates.
-
 Goal: decode the DORIC RPC commands accepted by the camera's DORIC
 server (`HalleyDoricServer` in `firmware-extract/output/apps_root/main.bin`)
 and their argument formats.
@@ -228,5 +224,4 @@ signature; event args list in out/id_map.txt.
   software "HC9.15.0.11.aec227943ed, 2021-01-28"; position
   pan=0 tilt=0 zoom=4180 focus=4228 (big-endian varints a054, a104);
   capabilities carries 8 varint limit pairs (pan/tilt/zoom/focus).
-
 
