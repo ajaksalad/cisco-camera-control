@@ -197,7 +197,16 @@ def decode_event(payload):
     r.uint(); r.uint()          # svc, obj (0,1)
     evt = r.uint()
     try:
-        if evt == 1:
+        if evt == 4:
+            # on_faces: count + FaceDetection[] (5 uints each).
+            # score is 16.16 fixed point (16384 = 0.25); field order
+            # x,y,w,h,score is best-guess from id_map "5 ints".
+            n = r.uint()
+            data = dict(faces=[dict(x=r.uint(), y=r.uint(), w=r.uint(),
+                                    h=r.uint(),
+                                    score=round(r.uint() / 65536, 3))
+                               for _ in range(n)])
+        elif evt == 1:
             data = dict(pan=r.float(), tilt=r.float(),
                         zoom=r.float(), focus=r.float())
         elif evt == 9:
