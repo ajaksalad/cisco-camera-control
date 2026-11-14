@@ -169,6 +169,9 @@ class Camera:
             except Exception as e:
                 print(f'[camera] connect failed ({self.name}): {e}', flush=True)
             self.conn = None
+            pends, self.pending = list(self.pending.values()), {}
+            for ev in pends:          # wake ask() callers at once
+                ev.set()
             time.sleep(2)
             print(f'[camera] reconnecting... ({self.name})', flush=True)
 
