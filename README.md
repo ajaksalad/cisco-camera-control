@@ -23,6 +23,7 @@ Works on cameras running firmware **HC9.15.0.11**.
 | File | Purpose |
 |------|---------|
 | `server.py` | HTTP API + web UI that drives a paired camera |
+| `doric.py` | DORIC wire codec: framing, command catalog (`CMDS`), observer-event decoders |
 | `provision.py` | One-shot tool that "pairs" any reachable camera by replaying a captured codec session |
 | `data/cppmf_session.bin` | 2.4 KB CPPMF (port 13491) management traffic — codec→camera |
 | `data/doric_session.bin` | 42.6 MB DORIC (port 13496) firmware + identity upload — codec→camera |
@@ -64,19 +65,35 @@ with concurrent.futures.ThreadPoolExecutor(64) as ex:
 # open http://localhost:8080 in a browser
 ```
 
-The web UI is a single page with pan/tilt/zoom number inputs. Hit "Go" to send
-an absolute `PositionSet` command.
+The web UI is a single page: hold-to-ramp pan/tilt pad, speed slider, zoom
+presets plus pan/tilt/zoom number inputs ("Go" sends an absolute
+`PositionSet`), query buttons (Status / Position / Capabilities), Call LED
+(on=0, off=1, blink=2), Flip/Mirror, OSD text entry (`osd_show_text`),
+square x/y/w/h inputs with on/off buttons (`osd_draw_square`), preset
+pan/tilt/zoom inputs with a convert button
+(`convert_preset_motor_positions_to_angles_and_zoom` — its result arrives as
+observer event 2 in the telemetry pane), Face detect (ON-only; the camera
+never acks it, detections push as event 4), and power/reboot. The `telemetry:`
+pane shows the last value of each observer event; the `responses:` pane logs
+every command result, newest first.
+
+Note: the camera accepts only ONE TLS client on 13496. If another controller
+holds the session, `server.py` logs repeated handshake EOF errors and the
+camera stays unreachable to it.
 
 ## HTTP API
 
 | Endpoint | Method | Body | Purpose |
 |----------|--------|------|---------|
 | `/` | GET | — | Web UI |
-| `/position` | POST | `{"pan": -10000..10000, "tilt": -2500..2500, "zoom": 1000..8000}` | Absolute position |
-| `/status` | GET | — | `{"connected": bool, "last_pos": {...}}` |
+| `/status` | GET | — | JSON array, one entry per camera: `connected`, `last_pos`, `telemetry` (event id → last decoded payload) |
+| `/commands` | GET | — | JSON list of every DORIC command: name, wire ID, arg spec |
+| `/command` | POST | `{"cam": idx, "cmd": name, "args": [...]}` | Send any command from `/commands`. Setters reply `{"sent": true}` (no camera ack — that is normal). Query commands reply `{"reply": {...}}` from the matching observer event. `configure` takes a JSON object of CameraConfig fields, merges it into the cached config, resends the full struct, and waits for the EVT 8 ack (8 s timeout) |
+| `/position` | POST | `{"pan": -10000..10000, "tilt": -2500..2500, "zoom": 1000..8000}` | Absolute position (legacy shortcut) |
 
 `pan` and `tilt` units are XAPI (1/100 of a degree).
-`zoom` is counterintuitive: lower = telephoto, higher = wide angle.
+`zoom`: 1000 = 1x, higher = more zoom (live-verified to at least 14000; the
+camera's raw zoom signal reaches its end at about 13817).
 
 ## How it works (brief)
 
