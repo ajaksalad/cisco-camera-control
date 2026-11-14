@@ -14,6 +14,7 @@ Opens a DORIC session to each camera and exposes a tiny HTTP API:
 Each camera must already be provisioned by a compatible codec (or by provision.py).
 """
 import argparse, http.server, json, queue, select, socket, ssl, sys, threading, time
+import doric
 
 # ── DORIC protocol constants (captured from a real codec session) ─────────────
 
@@ -56,6 +57,10 @@ class Camera:
         self.alive    = True
         self.send_q   = queue.Queue()
         self.last_pos = {'pan': None, 'tilt': None, 'zoom': None, 'ts': 0.0}
+        self.rxb      = b''            # partial-frame carry across recv()
+        self.telemetry = {}            # event id -> last decoded payload
+        self.pending  = {}             # event id -> threading.Event (ask())
+        self.tlock    = threading.Lock()
 
     def _tls_connect(self):
         # Camera (TTC8-07) only speaks TLS 1.0 with non-PFS CBC ciphers.
@@ -129,7 +134,10 @@ class Camera:
             try:
                 c = self._tls_connect()
                 self._handshake(c)
+                c.send(doric.encode_cmd('subscribe', [1]))  # observer events
+                self._rd(c, 3)
                 self.conn = c
+                self.rxb = b''
                 print(f'[camera] ready ({self.name} / {self.ip})', flush=True)
                 while self.alive:
                     try:
@@ -149,6 +157,10 @@ class Camera:
                             if not d:
                                 print(f'[camera] disconnect: FIN ({self.name})', flush=True)
                                 break
+                            self.rxb += d
+                            frames, self.rxb = doric.split_frames(self.rxb)
+                            for f in frames:
+                                self._ingest(f)
                         except (ssl.SSLWantReadError, BlockingIOError):
                             pass
                         except Exception as e:
@@ -167,7 +179,138 @@ class Camera:
         self.send_q.put(frame)
         self.last_pos = {'pan': pan, 'tilt': tilt, 'zoom': zoom, 'ts': time.time()}
 
+    def _ingest(self, payload):
+        evt, data, raw = doric.decode_event(payload)
+        if data is not None:
+            with self.tlock:
+                self.telemetry[evt] = data
+            ev = self.pending.pop(evt, None)
+            if ev is not None:
+                ev.result = data
+                ev.set()
+
+    def command(self, name, args=None):
+        if self.conn is None:
+            raise RuntimeError(f'camera not connected ({self.name})')
+        self.send_q.put(doric.encode_cmd(name, args or []))
+
+    def ask(self, name, timeout=3.0):
+        """Query method whose reply arrives as an observer event."""
+        evt_id = doric.QUERY_EVENT[name]
+        if self.conn is None:
+            raise RuntimeError(f'camera not connected ({self.name})')
+        ev = threading.Event()
+        ev.result = None
+        self.pending[evt_id] = ev
+        self.send_q.put(doric.encode_cmd(name, []))
+        if not ev.wait(timeout):
+            self.pending.pop(evt_id, None)
+            raise TimeoutError(f'no reply to {name} within {timeout}s')
+        return ev.result
+
 # ── Web UI ────────────────────────────────────────────────────────────────────
+
+PANEL_HTML = '''
+<div class="sec">Move (hold to ramp)</div>
+<div class="pad">
+<button class="pbtn" data-hold="ramp_up">&#9650;</button>
+<div class="padrow">
+<button class="pbtn" data-hold="ramp_left">&#9664;</button>
+<button class="pbtn" data-cmd="ramp_pt_stop">&#9632;</button>
+<button class="pbtn" data-hold="ramp_right">&#9654;</button>
+</div>
+<button class="pbtn" data-hold="ramp_down">&#9660;</button>
+</div>
+<div class="row"><label>Speed</label>
+<input type="number" id="speed" value="50" min="1" max="100" step="1"></div>
+<div class="btnrow">
+<button class="abtn" data-hold="ramp_zoom_in" data-stop="ramp_zoom_stop">Zoom+
+ (hold)</button>
+<button class="abtn" data-hold="ramp_zoom_out" data-stop="ramp_zoom_stop">Zoom-
+ (hold)</button>
+</div>
+<div class="sec">Home / Focus</div>
+<div class="btnrow">
+<button class="abtn" data-cmd="pan_tilt_reset">PT home</button>
+<button class="abtn" data-cmd="zoom_reset">Zoom home</button>
+<button class="abtn" data-cmd="focus_reset">Focus home</button>
+<button class="abtn" data-cmd="focus_trigger_auto">Auto focus</button>
+<button class="abtn" data-hold="focus_near" data-stop="focus_stop">Near</button>
+<button class="abtn" data-hold="focus_far" data-stop="focus_stop">Far</button>
+</div>
+<div class="sec">Query (live reply from camera)</div>
+<div class="btnrow">
+<button class="abtn" data-ask="get_status">Status</button>
+<button class="abtn" data-ask="get_position">Position</button>
+<button class="abtn" data-ask="get_capabilities">Capabilities</button>
+</div>
+<div class="sec">Modes / System (use with care)</div>
+<div class="btnrow">
+<button class="abtn" data-cmd="enable_hunter_mode">Hunter on</button>
+<button class="abtn" data-cmd="disable_hunter_mode">Hunter off</button>
+<button class="abtn" data-cmd="enable_speakertrack_mode">SpeakTrack on</button>
+<button class="abtn" data-cmd="disable_speakertrack_mode">SpeakTrack off</button>
+<button class="abtn" data-cmd="start_facedetection">Face detect</button>
+<button class="abtn" data-cmd="osd_clear">OSD clear</button>
+</div>
+<div class="btnrow">
+<button class="abtn" data-cmd="set_system_led" data-args="[1]">LED on</button>
+<button class="abtn" data-cmd="set_system_led" data-args="[0]">LED off</button>
+<button class="abtn danger" data-cmd="power_on">Power on</button>
+<button class="abtn danger" data-cmd="power_off">Power off</button>
+<button class="abtn danger" data-cmd="reboot">Reboot</button>
+</div>
+<pre id="telem">telemetry: waiting for events…</pre>
+'''
+
+PANEL_JS = '''
+const EV_NAMES = {2:'preset_angles',3:'malfunction',4:'faces',6:'motion',
+  7:'source_address',8:'config_complete',9:'status',10:'position',
+  11:'capabilities',12:'power_on_complete',13:'ack/config',14:'video_format'};
+const speed = () => Math.max(1, +$('speed').value || 50);
+
+async function sendCmd(cmd, args, ask) {
+  if (selectedCam === null) { $('status').textContent = 'Select a camera first'; return; }
+  const body = JSON.stringify({cam: selectedCam, cmd, args: args || []});
+  try {
+    const r = await fetch('/command', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body});
+    const t = await r.text();
+    if (ask && r.ok) { const j = JSON.parse(t);
+      $('telem').textContent = cmd + ' -> ' + JSON.stringify(j.reply, null, 1); }
+    else $('status').textContent = r.ok ? 'sent: ' + cmd : 'error ' + r.status + ': ' + t;
+  } catch (e) { $('status').textContent = 'network error: ' + e.message; }
+}
+
+document.querySelectorAll('[data-hold]').forEach(b => {
+  b.addEventListener('pointerdown', () => sendCmd(b.dataset.hold, [speed()]));
+  b.addEventListener('pointerup',   () => sendCmd(b.dataset.stop || 'ramp_pt_stop'));
+  b.addEventListener('pointercancel', () => sendCmd(b.dataset.stop || 'ramp_pt_stop'));
+});
+document.querySelectorAll('[data-cmd]').forEach(b => {
+  b.addEventListener('click', () => {
+    if (b.classList.contains('danger') &&
+        !confirm('Send ' + b.dataset.cmd + ' to the camera?')) return;
+    sendCmd(b.dataset.cmd, b.dataset.args ? JSON.parse(b.dataset.args) : []);
+  });
+});
+document.querySelectorAll('[data-ask]').forEach(b => {
+  b.addEventListener('click', () => sendCmd(b.dataset.ask, [], true));
+});
+
+async function pollTelemetry() {
+  if (selectedCam === null) return;
+  try {
+    const r = await fetch('/status');
+    const cams = await r.json();
+    const t = cams[selectedCam].telemetry || {};
+    const lines = Object.entries(t).map(([k, v]) =>
+      (EV_NAMES[k] || ('event' + k)) + ': ' + JSON.stringify(v));
+    if (lines.length) $('telem').textContent = lines.join('\n');
+  } catch (e) {}
+}
+setInterval(pollTelemetry, 2000);
+'''
 
 def build_index(cameras):
     cam_buttons = ''.join(
@@ -199,6 +342,24 @@ def build_index(cameras):
   #status {{ font-size:.8rem; color:#6c7086; margin-top:12px;
              min-height:1em; font-family:monospace; }}
   #selected-label {{ font-size:.85rem; color:#a6adc8; margin-bottom:6px; }}
+.sec {{ color:#7fb3ff; font-weight:bold; margin:16px 0 6px; font-size:13px;
+        text-transform:uppercase; letter-spacing:1px; }}
+.pad {{ display:flex; flex-direction:column; align-items:center; gap:4px;
+        margin:6px 0; }}
+.padrow {{ display:flex; gap:4px; }}
+.pbtn {{ width:52px; height:44px; font-size:18px; background:#1b2430;
+         border:1px solid #345; color:#eee; border-radius:8px; cursor:pointer;
+         touch-action:none; }}
+.pbtn:active {{ background:#2c3e52; }}
+.btnrow {{ display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }}
+.abtn {{ background:#1b2430; border:1px solid #345; color:#eee;
+         padding:8px 12px; border-radius:8px; cursor:pointer;
+         touch-action:none; }}
+.abtn:active {{ background:#2c3e52; }}
+.abtn.danger {{ border-color:#a33; color:#f88; }}
+#telem {{ background:#10161d; border:1px solid #234; padding:10px;
+          border-radius:8px; font-size:12px; margin-top:12px;
+          white-space:pre-wrap; }}
 </style></head><body>
 <h1>PTZ CONTROL</h1>
 <div class="cam-row" id="cam-row">{cam_buttons}</div>
@@ -210,6 +371,7 @@ def build_index(cameras):
 <div class="row"><label>Zoom</label>
   <input type="number" id="zoom" value="5000" min="1000" max="20000" step="100"></div>
 <button class="go" id="go">Go</button>
+{PANEL_HTML}
 <div id="status">Select a camera above</div>
 <script>
 const $ = id => document.getElementById(id);
@@ -246,6 +408,7 @@ $('go').onclick = async () => {{
     $('status').textContent = 'network error: ' + e.message;
   }}
 }};
+{PANEL_JS}
 </script></body></html>
 '''.encode('utf-8')
     return html
@@ -274,13 +437,22 @@ def make_handler(cameras):
                     'ip':        cam.ip,
                     'connected': cam.conn is not None,
                     'last_pos':  cam.last_pos,
+                    'telemetry': {str(k): v for k, v in cam.telemetry.items()},
                 } for cam in cameras]).encode()
+                self._send(200, body, 'application/json')
+            elif self.path == '/commands':
+                body = json.dumps([
+                    {'name': n, 'id': mid, 'args': spec}
+                    for n, (mid, spec) in sorted(
+                        doric.CMDS.items(), key=lambda kv: kv[1][0])
+                    if n != 'subscribe'
+                ], indent=1).encode()
                 self._send(200, body, 'application/json')
             else:
                 self._send(404, b'not found')
 
         def do_POST(self):
-            if self.path != '/position':
+            if self.path not in ('/position', '/command'):
                 self._send(404, b'not found'); return
             try:
                 n = int(self.headers.get('Content-Length', 0))
@@ -289,8 +461,22 @@ def make_handler(cameras):
                 if idx < 0 or idx >= len(cameras):
                     self._send(400, f'cam index {idx} out of range (0–{len(cameras)-1})'.encode())
                     return
-                cameras[idx].goto(data['pan'], data['tilt'], data['zoom'])
-                self._send(200, b'ok')
+                if self.path == '/position':
+                    cameras[idx].goto(data['pan'], data['tilt'], data['zoom'])
+                    self._send(200, b'ok')
+                    return
+                cmd = data['cmd']
+                if cmd not in doric.CMDS or cmd == 'subscribe':
+                    self._send(400, f'unknown command: {cmd}'.encode()); return
+                args = data.get('args', [])
+                if cmd in doric.QUERY_EVENT:
+                    reply = cameras[idx].ask(cmd)
+                    self._send(200, json.dumps({'cmd': cmd, 'reply': reply}).encode(),
+                               'application/json')
+                else:
+                    cameras[idx].command(cmd, args)
+                    self._send(200, json.dumps({'cmd': cmd, 'sent': True}).encode(),
+                               'application/json')
             except RuntimeError as e:
                 self._send(503, str(e).encode())
             except Exception as e:
